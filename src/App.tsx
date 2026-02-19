@@ -20,7 +20,14 @@ type State = {
 };
 
 const V = 1;
+
 const KEY = "film_tagger_v1";
+
+// API base:
+// - Dev (with Vite proxy): leave VITE_API_BASE empty so calls go to "/api/..."
+// - Prod (hosted UI): set VITE_API_BASE to your Worker URL
+const API_BASE = String(import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+const apiUrl = (path: string) => (API_BASE ? `${API_BASE}${path}` : path);
 
 const PINNED = [
   "Game Speed",
@@ -470,7 +477,7 @@ function buildLocalDraft(notes: string, all: { label: string; count: number }[])
 async function genAI(prompt: string): Promise<string> {
   // Calls your server route (recommended) so your Gemini key stays off the client.
   // You must implement /api/generate to return JSON: { text: "..." } (or { error: "..." }).
-  const resp = await fetch("/api/generate", {
+  const resp = await fetch(apiUrl("/api/generate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
@@ -681,7 +688,7 @@ export default function App() {
     try {
       // IMPORTANT: This expects YOU to host a server route at /api/generate
       // that calls Gemini with your API key safely on the server.
-      const resp = await fetch("/api/generate", {
+      const resp = await fetch(apiUrl("/api/generate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),

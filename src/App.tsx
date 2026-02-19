@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Position = "" | "QB" | "RB" | "WR" | "TE" | "OL" | "DL" | "LB" | "DB";
 type SectionKey = "athletic" | "qb" | "rb" | "wr" | "te" | "ol" | "dl" | "lb" | "db";
@@ -686,22 +686,8 @@ export default function App() {
     setSt((s) => ({ ...s, prompt, out: "", outMode: "" }));
 
     try {
-      // IMPORTANT: This expects YOU to host a server route at /api/generate
-      // that calls Gemini with your API key safely on the server.
-      const resp = await fetch(apiUrl("/api/generate"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      });
-
-      if (!resp.ok) {
-        const t = await resp.text().catch(() => "");
-        throw new Error(`HTTP ${resp.status}${t ? ` — ${t.slice(0, 300)}` : ""}`);
-      }
-
-      const data = (await resp.json()) as { text?: string; error?: string };
-      const ai = String(data?.text ?? "").trim();
-      if (!ai) throw new Error(data?.error || "empty");
+      // Call shared helper (server route) so the key never lives on the client
+      const ai = await genAI(prompt);
 
       // Enforce 4–8 sentences (basic check)
       const outSentences = countSentences(ai);
@@ -710,20 +696,30 @@ export default function App() {
       }
 
       setSt((s) => ({ ...s, out: ai, outMode: "ai" }));
-      say("Generated with Gemini.");
+      say("Generated with AI.");
     } catch (err: any) {
-      const msg = String(err?.message || err || "Gemini failed");
+      const msg = String(err?.message || err || "AI failed");
+
+      // local fallback so you still get something usable
+      const allPicked = allOrdered
+        .map((label) => ({ label, count: getCount(label) }))
+        .filter((x) => x.count > 0);
+
+      const local = buildLocalDraft(st.notes, allPicked);
+
       setSt((s) => ({
         ...s,
         out:
-          `Gemini error: ${msg}\n\n` +
-          `If this keeps happening, it usually means:\n` +
-          `- /api/generate route doesn’t exist yet\n` +
-          `- API key isn’t set on the server\n` +
-          `- model name / request format is wrong\n`,
-        outMode: "",
+          `AI error: ${msg}\n\n` +
+          `Local Draft (fallback):\n` +
+          `${local}\n\n` +
+          `If AI keeps failing, it usually means:\n` +
+          `- /api/generate route isn’t reachable from Pages\n` +
+          `- VITE_API_BASE isn’t set correctly in Pages env vars\n`,
+        outMode: "local",
       }));
-      say("Gemini error — see output box.");
+
+      say("AI failed — local draft generated.");
     }
   };
 

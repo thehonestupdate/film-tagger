@@ -424,7 +424,13 @@ function emptyState(): State {
 }
 
 function countSentences(s: string) {
-  return s
+  // Keep the 1-4 sentence check forgiving around common note shorthand.
+  const normalized = s
+    .replace(/\b(Mr|Mrs|Ms|Dr|Jr|Sr|St|vs|etc)\./gi, "$1")
+    .replace(/\b([A-Z])\./g, "$1")
+    .replace(/(\d)\.(\d)/g, "$1$2");
+
+  return normalized
     .split(/[.!?]+/)
     .map((p) => p.trim())
     .filter(Boolean).length;
@@ -689,14 +695,12 @@ export default function App() {
       // Call shared helper (server route) so the key never lives on the client
       const ai = await genAI(prompt);
 
-      // Enforce 4–8 sentences (basic check)
+      // Models drift a little. Keep usable AI output instead of failing hard.
       const outSentences = countSentences(ai);
-      if (outSentences < 4 || outSentences > 8) {
-        throw new Error(`wrong_length (${outSentences} sentences)`);
-      }
+      const cleaned = ai.replace(/\s+/g, " ").trim();
 
-      setSt((s) => ({ ...s, out: ai, outMode: "ai" }));
-      say("Generated with AI.");
+      setSt((s) => ({ ...s, out: cleaned, outMode: "ai" }));
+      say(outSentences < 4 || outSentences > 8 ? `Generated with AI (${outSentences} sentences).` : "Generated with AI.");
     } catch (err: any) {
       const msg = String(err?.message || err || "AI failed");
 

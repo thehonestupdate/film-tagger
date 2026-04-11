@@ -2,9 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 type Position = "" | "QB" | "RB" | "WR" | "TE" | "OL" | "DL" | "LB" | "DB";
 type SectionKey = "athletic" | "qb" | "rb" | "wr" | "te" | "ol" | "dl" | "lb" | "db";
-type Screen = "start" | "tag" | "done";
+type Screen = "start" | "tag" | "done" | "library";
+type TraitLevel = 1 | 2 | 3;
 
 type Player = { name: string; school: string; yearClass: string; position: Position };
+type SelectedTrait = { traitName: string; traitLevel: TraitLevel; section: string };
+type LibraryEntry = {
+  id: number;
+  playerName: string;
+  school: string;
+  yearClass: string;
+  position: string;
+  notes: string;
+  outputText: string;
+  createdAt: string;
+  traits: { traitName: string; traitLevel: TraitLevel }[];
+};
+type LibraryFilters = { search: string; school: string; yearClass: string; position: Position; trait: string; level: "" | "1" | "2" | "3" };
 
 type State = {
   v: number;
@@ -15,7 +29,7 @@ type State = {
   undo: string[];
   notes: string;
   out: string;
-  outMode: "ai" | "local" | "";
+  outMode: "saved" | "";
   prompt: string;
 };
 
@@ -343,6 +357,14 @@ textarea{resize:vertical}
 .split{display:grid;grid-template-columns:1.05fr .95fr;gap:12px;margin-top:12px}
 @media (max-width:900px){.split{grid-template-columns:1fr}}
 .box{border:1px solid var(--line);background:rgba(255,255,255,.03);border-radius:14px;padding:12px;min-height:120px;white-space:pre-wrap}
+.libraryGrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:12px}
+.libraryGrid .wide{grid-column:span 2}
+@media (max-width:900px){.libraryGrid{grid-template-columns:1fr}.libraryGrid .wide{grid-column:auto}}
+.entry{border:1px solid var(--line);background:rgba(255,255,255,.025);border-radius:14px;padding:12px;margin-top:10px}
+.entryTop{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.entryTitle{font-weight:800}
+.entryMeta{color:var(--muted);font-size:12px;margin-top:3px}
+.entryText{white-space:pre-wrap;margin-top:10px;color:var(--text)}
 .small{font-size:12px;color:var(--muted)}
 .good{color:var(--ok)}.bad{color:var(--bad)}
 .toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:rgba(10,14,20,.88);border:1px solid var(--line);padding:10px 12px;border-radius:999px;z-index:50}
@@ -423,70 +445,30 @@ function emptyState(): State {
   };
 }
 
-function countSentences(s: string) {
-  // Keep the 1-4 sentence check forgiving around common note shorthand.
-  const normalized = s
-    .replace(/\b(Mr|Mrs|Ms|Dr|Jr|Sr|St|vs|etc)\./gi, "$1")
-    .replace(/\b([A-Z])\./g, "$1")
-    .replace(/(\d)\.(\d)/g, "$1$2");
+const levelLabel = (level: number) => (level >= 3 ? "elite" : level === 2 ? "above average" : "flashed");
 
-  return normalized
-    .split(/[.!?]+/)
-    .map((p) => p.trim())
-    .filter(Boolean).length;
-}
+function buildArticleOutput(player: Player, notes: string, traits: SelectedTrait[]) {
+  const position = player.position ? ` | Position: ${player.position}` : "";
+  const traitLines = traits.map((trait) => `- ${trait.traitName} — ${levelLabel(trait.traitLevel)}`);
 
-const joinNatural = (a: string[]) => (a.length <= 1 ? (a[0] || "") : a.length === 2 ? `${a[0]} and ${a[1]}` : `${a.slice(0, -1).join(", ")}, and ${a[a.length - 1]}`);
-
-const emphasis = (c: number) => (c >= 3 ? "defining" : c === 2 ? "strong" : "noticeable");
-
-function buildPrompt(player: Player, notes: string, pickedPinned: { label: string; count: number }[], pickedOther: { label: string; count: number }[]) {
-  const header = `You are writing a football scouting blurb.\n\nPlayer: ${player.name} | ${player.school} | ${player.yearClass}${player.position ? ` | ${player.position}` : ""}`;
-  const rules = [
-    "Write ONE long single paragraph (no bullet points, no headings).",
-    "Tone: natural, sharp, not corny.",
-    "The user's 1–4 sentences are the primary truth—preserve/echo them.",
-    "Tap counts are only emphasis: 3=defining, 2=strong, 1=noticeable.",
-    "Weave traits into prose—do not list mechanically.",
-    "Do NOT invent stats, offers, measurables, or biographical info.",
-    "No negatives unless the user wrote them.",
-  ].join("\n");
-  const fmt = (x: { label: string; count: number }[]) => (x.length ? x.map((t) => `- ${t.label} (${t.count} = ${emphasis(t.count)})`).join("\n") : "(none)");
   return [
-    header,
-    "\nINSTRUCTIONS:",
-    rules,
-    "\nUSER SENTENCES (primary truth, preserve):",
+    `Player: ${player.name}`,
+    `School: ${player.school}`,
+    `Class: ${player.yearClass}${position}`,
+    "",
+    "My Notes:",
     notes.trim(),
-    "\nPINNED TRAITS TAPPED:",
-    fmt(pickedPinned),
-    "\nOTHER TRAITS TAPPED:",
-    fmt(pickedOther),
+    "",
+    "Traits:",
+    traitLines.join("\n"),
   ].join("\n");
 }
 
-function buildLocalDraft(notes: string, all: { label: string; count: number }[]) {
-  const clean = notes.trim().replace(/\s+/g, " ");
-  const def = all.filter((t) => t.count >= 3).map((t) => t.label);
-  const strong = all.filter((t) => t.count === 2).map((t) => t.label);
-  const flash = all.filter((t) => t.count === 1).map((t) => t.label);
-  const chunks: string[] = [];
-  if (clean) chunks.push(/[.!?]$/.test(clean) ? clean : `${clean}.`);
-  if (def.length) chunks.push(`What keeps jumping off the screen is ${joinNatural(def)} — those feel like defining traits, not just one-off flashes.`);
-  if (strong.length) chunks.push(`${joinNatural(strong)} consistently stood out, showing up in a way that should hold when the pace speeds up.`);
-  if (flash.length) chunks.push(`There were also clear flashes of ${joinNatural(flash)} — not every snap, but enough to be part of the profile.`);
-  if (!def.length && !strong.length && !flash.length) chunks.push("Trait-wise, keep it simple: the notes above are the takeaways, and this writeup avoids inventing anything beyond what was actually seen on film.");
-  chunks.push("Overall, it's a clean snapshot from tape—built around what was actually seen, with trait tags only used to emphasize what popped most.");
-  return chunks.join(" ").replace(/\s+/g, " ").trim();
-}
-
-async function genAI(prompt: string): Promise<string> {
-  // Calls your server route (recommended) so your Gemini key stays off the client.
-  // You must implement /api/generate to return JSON: { text: "..." } (or { error: "..." }).
-  const resp = await fetch(apiUrl("/api/generate"), {
+async function addTags(payload: { player: Player; notes: string; outputText: string; traits: SelectedTrait[] }) {
+  const resp = await fetch(apiUrl("/api/add-tags"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ ...payload, traits: payload.traits.map(({ traitName, traitLevel }) => ({ traitName, traitLevel })) }),
   });
 
   if (!resp.ok) {
@@ -494,10 +476,26 @@ async function genAI(prompt: string): Promise<string> {
     throw new Error(`HTTP ${resp.status}${t ? ` — ${t.slice(0, 300)}` : ""}`);
   }
 
-  const data = (await resp.json()) as { text?: string; error?: string };
-  const text = String(data?.text ?? "").trim();
-  if (!text) throw new Error(String(data?.error || "empty"));
-  return text;
+  return (await resp.json()) as { ok?: boolean; id?: number; error?: string };
+}
+
+async function fetchLibrary(filters: LibraryFilters) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+  }
+
+  const resp = await fetch(apiUrl(`/api/evaluations${params.size ? `?${params}` : ""}`));
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status}${t ? ` — ${t.slice(0, 300)}` : ""}`);
+  }
+
+  return (await resp.json()) as { evaluations?: LibraryEntry[]; error?: string };
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : String(err || fallback);
 }
 
 async function copy(text: string) {
@@ -561,6 +559,10 @@ export default function App() {
       return emptyState();
     }
   });
+  const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>({ search: "", school: "", yearClass: "", position: "", trait: "", level: "" });
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
 
   useEffect(() => {
     try {
@@ -569,6 +571,12 @@ export default function App() {
       // ignore
     }
   }, [st]);
+
+  useEffect(() => {
+    if (st.screen !== "library") return;
+    void refreshLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [st.screen]);
 
   const say = (m: string) => {
     setToast(m);
@@ -579,15 +587,29 @@ export default function App() {
   const getCount = (t: string) => clamp(st.counts[t] ?? 0);
   const hasAny = useMemo(() => Object.values(st.counts).some((v) => clamp(v) > 0), [st.counts]);
 
-  const pinnedTapped = useMemo(() => PINNED.reduce((n, t) => n + (getCount(t) > 0 ? 1 : 0), 0), [st.counts]);
+  const pinnedTapped = PINNED.reduce((n, t) => n + (getCount(t) > 0 ? 1 : 0), 0);
   const sectionTapped = (k: SectionKey) => sections[k].traits.reduce((n, t) => n + (getCount(t) > 0 ? 1 : 0), 0);
 
   const title = useMemo(() => {
+    if (st.screen === "library") return "Film Tagger Library";
     const p = st.player;
     return !p.name && !p.school ? "Film Tagger" : `${p.name || "Player"} • ${p.school || "School"}`;
-  }, [st.player]);
+  }, [st.player, st.screen]);
 
   const cur = sections[st.active];
+  const showTagShell = st.screen === "tag" || st.screen === "done";
+
+  const traitMeta = useMemo(() => {
+    const pinned = new Set<string>(PINNED as unknown as string[]);
+    const meta = new Map<string, string>();
+    for (const trait of PINNED) meta.set(trait, "Pinned");
+    for (const key of ORDER) {
+      for (const trait of sections[key].traits) {
+        if (!pinned.has(trait)) meta.set(trait, sections[key].label);
+      }
+    }
+    return meta;
+  }, [sections]);
 
   const tap = (t: string) => {
     const c = getCount(t);
@@ -630,7 +652,7 @@ export default function App() {
 
   const canStart = st.player.name.trim() && st.player.school.trim() && st.player.yearClass.trim();
 
-  const doneSummary = useMemo(() => {
+  const doneSummary = (() => {
     const pinned = PINNED.map((t) => ({ label: t, count: getCount(t) })).filter((x) => x.count > 0);
     const secs = ORDER
       .map((k) => ({
@@ -640,90 +662,62 @@ export default function App() {
       }))
       .filter((x) => x.traits.length);
     return { pinned, secs };
-  }, [st.counts, sections]);
+  })();
 
-  const sentenceCount = useMemo(() => countSentences(st.notes), [st.notes]);
-
-  const pickForGen = () => {
-    const pinnedSet = new Set<string>(PINNED as unknown as string[]);
-    const pickedPinned: { label: string; count: number }[] = [];
-    const pickedOtherAll: { label: string; count: number }[] = [];
-
+  const selectedTraits = (() => {
+    const traits: SelectedTrait[] = [];
     for (const t of allOrdered) {
       const c = getCount(t);
       if (!c) continue;
-      if (pinnedSet.has(t)) pickedPinned.push({ label: t, count: c });
-      else pickedOtherAll.push({ label: t, count: c });
+      traits.push({ traitName: t, traitLevel: c as TraitLevel, section: traitMeta.get(t) || "Other" });
     }
+    return traits.sort((a, b) => b.traitLevel - a.traitLevel || a.traitName.localeCompare(b.traitName));
+  })();
 
-    const c3 = pickedOtherAll.filter((x) => x.count >= 3);
-    const c2 = pickedOtherAll.filter((x) => x.count === 2).slice(0, 6);
-    const c1 = pickedOtherAll.filter((x) => x.count === 1).slice(0, 6);
-    const pickedOther = [...c3, ...c2, ...c1].sort((a, b) => b.count - a.count);
-    return { pickedPinned, pickedOther };
+  const refreshLibrary = async (filters = libraryFilters) => {
+    setLibraryLoading(true);
+    setLibraryError("");
+    try {
+      const data = await fetchLibrary(filters);
+      if (data.error) throw new Error(data.error);
+      setLibrary(data.evaluations || []);
+    } catch (err: unknown) {
+      setLibraryError(errorMessage(err, "Failed to load library"));
+    } finally {
+      setLibraryLoading(false);
+    }
   };
 
-  const generate = async () => {
-    const sc = countSentences(st.notes);
-
-    // Your notes are still the "truth" and kept tight.
-    if (sc < 1 || sc > 4) {
-      say("Keep notes to 1–4 sentences.");
+  const addCurrentTags = async () => {
+    const notes = st.notes.trim();
+    if (!notes) {
+      say("Add notes before saving.");
       notesRef.current?.focus();
       return;
     }
 
-    const { pickedPinned, pickedOther } = pickForGen();
+    if (!selectedTraits.length) {
+      say("Tap at least one trait.");
+      return;
+    }
 
-    // Build prompt like before
-    let prompt = buildPrompt(st.player, st.notes, pickedPinned, pickedOther);
-
-    // Override output requirements: 4–8 sentences, single paragraph
-    prompt +=
-      "\n\nOUTPUT REQUIREMENTS (MUST FOLLOW):\n" +
-      "- Write 4–8 sentences total.\n" +
-      "- Single paragraph only (no bullet points, no headings).\n" +
-      "- Natural scouting voice. Football-smart, not corny.\n" +
-      "- Do NOT invent stats, offers, measurables, or background.\n" +
-      "- Use my notes as the primary truth.\n" +
-      "- If you mention traits, weave them naturally—do not list.\n" +
-      "- End with a clean overall takeaway sentence.\n";
-
-    setSt((s) => ({ ...s, prompt, out: "", outMode: "" }));
+    const outputText = buildArticleOutput(st.player, notes, selectedTraits);
+    setSt((s) => ({ ...s, out: outputText, outMode: "", prompt: "" }));
 
     try {
-      // Call shared helper (server route) so the key never lives on the client
-      const ai = await genAI(prompt);
-
-      // Models drift a little. Keep usable AI output instead of failing hard.
-      const outSentences = countSentences(ai);
-      const cleaned = ai.replace(/\s+/g, " ").trim();
-
-      setSt((s) => ({ ...s, out: cleaned, outMode: "ai" }));
-      say(outSentences < 4 || outSentences > 8 ? `Generated with AI (${outSentences} sentences).` : "Generated with AI.");
-    } catch (err: any) {
-      const msg = String(err?.message || err || "AI failed");
-
-      // local fallback so you still get something usable
-      const allPicked = allOrdered
-        .map((label) => ({ label, count: getCount(label) }))
-        .filter((x) => x.count > 0);
-
-      const local = buildLocalDraft(st.notes, allPicked);
-
+      const data = await addTags({ player: st.player, notes, outputText, traits: selectedTraits });
+      if (data.error) throw new Error(data.error);
+      setSt((s) => ({ ...s, out: outputText, outMode: "saved" }));
+      say("Tags added and saved.");
+      void refreshLibrary();
+    } catch (err: unknown) {
+      const msg = errorMessage(err, "Failed to save tags");
       setSt((s) => ({
         ...s,
-        out:
-          `AI error: ${msg}\n\n` +
-          `Local Draft (fallback):\n` +
-          `${local}\n\n` +
-          `If AI keeps failing, it usually means:\n` +
-          `- /api/generate route isn’t reachable from Pages\n` +
-          `- VITE_API_BASE isn’t set correctly in Pages env vars\n`,
-        outMode: "local",
+        out: `${outputText}\n\nSave error: ${msg}`,
+        outMode: "",
       }));
-
-      say("AI failed — local draft generated.");
+      say("Copy block made, but save failed.");
     }
   };
 
@@ -744,7 +738,13 @@ export default function App() {
             <div>
               <div className="title">{title}</div>
               <div className="sub">
-                {st.screen === "start" ? "Set player info, then start tagging." : st.screen === "tag" ? "Tap traits as you watch film." : "Review, write notes, and generate."}
+                {st.screen === "start"
+                  ? "Set player info, then start tagging."
+                  : st.screen === "tag"
+                    ? "Tap traits as you watch film."
+                    : st.screen === "library"
+                      ? "Search saved players, notes, and traits."
+                      : "Review notes, add tags, and save."}
               </div>
             </div>
           </div>
@@ -766,7 +766,17 @@ export default function App() {
                 </button>
               </>
             )}
-            {st.screen !== "start" && (
+            {showTagShell && (
+              <button className="btn" onClick={() => setSt((s) => ({ ...s, screen: "library" }))}>
+                Library
+              </button>
+            )}
+            {st.screen === "library" && (
+              <button className="btn primary" onClick={() => setSt((s) => ({ ...s, screen: hasAny ? "done" : "start" }))}>
+                Back
+              </button>
+            )}
+            {showTagShell && (
               <button className="btn danger" onClick={newPlayer}>
                 New Player
               </button>
@@ -776,7 +786,7 @@ export default function App() {
       </header>
 
       <div className="shell">
-        {st.screen !== "start" && (
+        {showTagShell && (
           <>
             {overlay}
             <aside className={`side ${sideOpen ? "open" : ""}`}>
@@ -873,7 +883,12 @@ export default function App() {
                 <div className="card">
                   <div className="h1">How It Works</div>
                   <div className="desc" style={{ marginTop: 8 }}>
-                    Tap a trait to increment (0→3). 1 = saw it, 2 = stood out, 3 = rare/defining. Pinned traits are always visible and never duplicated in section grids.
+                    Tap a trait to increment (0→3). 1 = flashed, 2 = above average, 3 = elite. Pinned traits are always visible and never duplicated in section grids.
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <button className="btn" onClick={() => setSt((s) => ({ ...s, screen: "library" }))}>
+                      Open Library
+                    </button>
                   </div>
                 </div>
               </>
@@ -957,7 +972,7 @@ export default function App() {
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
                     <div>
                       <div className="h1">Done Watching</div>
-                      <div className="desc">Review tags, write 1–4 sentences, then generate one long paragraph.</div>
+                      <div className="desc">Review tags, write your notes, then add tags to save this player and create a copy block.</div>
                     </div>
                     <button className="btn" onClick={() => setSt((s) => ({ ...s, screen: "tag" }))}>
                       Back to Tagging
@@ -1016,18 +1031,16 @@ export default function App() {
 
                     <div className="card" style={{ padding: 12, background: "rgba(255,255,255,.02)" }}>
                       <div className="h1" style={{ fontSize: 14 }}>
-                        Your 1–4 Sentences
+                        My Notes
                       </div>
-                      <div className="small" style={{ marginTop: 6 }}>
-                        Sentence count: <span className={sentenceCount >= 1 && sentenceCount <= 4 ? "good" : "bad"}>{sentenceCount}</span>
-                      </div>
+                      <div className="small" style={{ marginTop: 6 }}>Saved exactly as your source notes for the player.</div>
 
                       <textarea
                         ref={notesRef}
                         value={st.notes}
                         onChange={(e) => setSt((s) => ({ ...s, notes: e.target.value }))}
                         rows={6}
-                        placeholder="Write 1–4 sentences. Your sentences are the primary truth."
+                        placeholder="Write your notes. These will be saved with the player and included in the copy block."
                         style={{ marginTop: 10 }}
                       />
 
@@ -1035,39 +1048,157 @@ export default function App() {
                         <button className="btn" onClick={resetAll}>
                           Reset All
                         </button>
-                        <button className="btn primary" onClick={generate} disabled={!hasAny}>
-                          Generate Paragraph
+                        <button className="btn primary" onClick={addCurrentTags} disabled={!hasAny}>
+                          Add Tags
                         </button>
                       </div>
 
                       <div style={{ marginTop: 12 }}>
-                        <div className="small">Output {st.outMode ? `(${st.outMode.toUpperCase()})` : ""}</div>
-                        <div className="box" style={{ marginTop: 8 }}>{st.out || "(Generate to see output here)"}</div>
+                        <div className="small">Copy Block {st.outMode ? `(${st.outMode.toUpperCase()})` : ""}</div>
+                        <div className="box" style={{ marginTop: 8 }}>{st.out || "(Add tags to create the copy block here)"}</div>
                         <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                           <button
                             className="btn"
                             disabled={!st.out}
                             onClick={async () => {
                               const ok = await copy(st.out);
-                              say(ok ? "Copied paragraph." : "Copy failed.");
+                              say(ok ? "Copied block." : "Copy failed.");
                             }}
                           >
-                            Copy Paragraph
+                            Copy Block
                           </button>
-                          <button
-                            className="btn"
-                            disabled={!st.prompt}
-                            onClick={async () => {
-                              const ok = await copy(st.prompt);
-                              say(ok ? "Copied prompt." : "Copy failed.");
-                            }}
-                          >
-                            Copy Prompt
+                          <button className="btn" onClick={() => setSt((s) => ({ ...s, screen: "library" }))}>
+                            Open Library
                           </button>
                         </div>
                       </div>
                     </div>
                   </div>
+                </div>
+              </>
+            )}
+
+            {st.screen === "library" && (
+              <>
+                <div className="card">
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <div>
+                      <div className="h1">Player Library</div>
+                      <div className="desc">Saved D1 entries from Add Tags. Filter by school, class, position, trait, or level.</div>
+                    </div>
+                    <div className="row">
+                      <button className="btn" onClick={() => void refreshLibrary()}>
+                        Refresh
+                      </button>
+                      <button className="btn primary" onClick={() => setSt((s) => ({ ...s, screen: hasAny ? "done" : "start" }))}>
+                        Back
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="libraryGrid">
+                    <div className="field wide">
+                      <label>Search</label>
+                      <input value={libraryFilters.search} onChange={(e) => setLibraryFilters((f) => ({ ...f, search: e.target.value }))} placeholder="name, notes, school..." />
+                    </div>
+                    <div className="field">
+                      <label>School</label>
+                      <input value={libraryFilters.school} onChange={(e) => setLibraryFilters((f) => ({ ...f, school: e.target.value }))} placeholder="school" />
+                    </div>
+                    <div className="field">
+                      <label>Class</label>
+                      <input value={libraryFilters.yearClass} onChange={(e) => setLibraryFilters((f) => ({ ...f, yearClass: e.target.value }))} placeholder="2027" />
+                    </div>
+                    <div className="field">
+                      <label>Position</label>
+                      <select value={libraryFilters.position} onChange={(e) => setLibraryFilters((f) => ({ ...f, position: e.target.value as Position }))}>
+                        <option value="">Any</option>
+                        {(["QB", "RB", "WR", "TE", "OL", "DL", "LB", "DB"] as Position[]).map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label>Level</label>
+                      <select value={libraryFilters.level} onChange={(e) => setLibraryFilters((f) => ({ ...f, level: e.target.value as LibraryFilters["level"] }))}>
+                        <option value="">Any</option>
+                        <option value="1">Flashed</option>
+                        <option value="2">Above Average</option>
+                        <option value="3">Elite</option>
+                      </select>
+                    </div>
+                    <div className="field wide">
+                      <label>Trait</label>
+                      <input value={libraryFilters.trait} onChange={(e) => setLibraryFilters((f) => ({ ...f, trait: e.target.value }))} placeholder="e.g., agility, Game Speed" />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button className="btn primary" onClick={() => void refreshLibrary()}>
+                      Apply Filters
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const cleared: LibraryFilters = { search: "", school: "", yearClass: "", position: "", trait: "", level: "" };
+                        setLibraryFilters(cleared);
+                        void refreshLibrary(cleared);
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {libraryError && (
+                    <div className="desc bad" style={{ marginTop: 12 }}>
+                      {libraryError}
+                    </div>
+                  )}
+
+                  <div className="small" style={{ marginTop: 12 }}>
+                    {libraryLoading ? "Loading..." : `${library.length} saved ${library.length === 1 ? "entry" : "entries"}`}
+                  </div>
+
+                  {!libraryLoading && !library.length && (
+                    <div className="desc" style={{ marginTop: 10 }}>
+                      No saved entries match those filters yet.
+                    </div>
+                  )}
+
+                  {library.map((entry) => (
+                    <div className="entry" key={entry.id}>
+                      <div className="entryTop">
+                        <div>
+                          <div className="entryTitle">{entry.playerName}</div>
+                          <div className="entryMeta">
+                            {entry.school} • {entry.yearClass}
+                            {entry.position ? ` • ${entry.position}` : ""} • {new Date(entry.createdAt).toLocaleString()}
+                          </div>
+                        </div>
+                        <button
+                          className="btn"
+                          onClick={async () => {
+                            const ok = await copy(entry.outputText);
+                            say(ok ? "Copied saved block." : "Copy failed.");
+                          }}
+                        >
+                          Copy
+                        </button>
+                      </div>
+
+                      <div className="chips">
+                        {entry.traits.map((trait) => (
+                          <span key={`${entry.id}-${trait.traitName}-${trait.traitLevel}`} className={`chip ${trait.traitLevel >= 2 ? "hot" : ""}`}>
+                            {trait.traitName} <b style={{ marginLeft: 6 }}>{levelLabel(trait.traitLevel)}</b>
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="entryText">{entry.notes}</div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}

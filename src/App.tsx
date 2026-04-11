@@ -494,6 +494,16 @@ async function fetchLibrary(filters: LibraryFilters) {
   return (await resp.json()) as { evaluations?: LibraryEntry[]; error?: string };
 }
 
+async function deleteLibraryEntry(id: number) {
+  const resp = await fetch(apiUrl(`/api/evaluations/${id}`), { method: "DELETE" });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status}${t ? ` — ${t.slice(0, 300)}` : ""}`);
+  }
+
+  return (await resp.json()) as { ok?: boolean; error?: string };
+}
+
 function errorMessage(err: unknown, fallback: string) {
   return err instanceof Error ? err.message : String(err || fallback);
 }
@@ -718,6 +728,19 @@ export default function App() {
         outMode: "",
       }));
       say("Copy block made, but save failed.");
+    }
+  };
+
+  const removeLibraryEntry = async (entry: LibraryEntry) => {
+    if (!window.confirm(`Delete ${entry.playerName} from the database?`)) return;
+
+    try {
+      const data = await deleteLibraryEntry(entry.id);
+      if (data.error) throw new Error(data.error);
+      setLibrary((entries) => entries.filter((item) => item.id !== entry.id));
+      say("Deleted from library.");
+    } catch (err: unknown) {
+      say(errorMessage(err, "Delete failed"));
     }
   };
 
@@ -1177,15 +1200,20 @@ export default function App() {
                             {entry.position ? ` • ${entry.position}` : ""} • {new Date(entry.createdAt).toLocaleString()}
                           </div>
                         </div>
-                        <button
-                          className="btn"
-                          onClick={async () => {
-                            const ok = await copy(entry.outputText);
-                            say(ok ? "Copied saved block." : "Copy failed.");
-                          }}
-                        >
-                          Copy
-                        </button>
+                        <div className="row">
+                          <button
+                            className="btn"
+                            onClick={async () => {
+                              const ok = await copy(entry.outputText);
+                              say(ok ? "Copied saved block." : "Copy failed.");
+                            }}
+                          >
+                            Copy
+                          </button>
+                          <button className="btn danger" onClick={() => void removeLibraryEntry(entry)}>
+                            Delete
+                          </button>
+                        </div>
                       </div>
 
                       <div className="chips">
